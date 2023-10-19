@@ -23,7 +23,7 @@
 #define N_SIZE_MAX      1073741824  /* 1GiB */
 #define N_SIZE_DEFAULT  N_SIZE_MAX
 #define N_ITER_DEFAULT  100
-#define HITS_VERSION    "hits 1.0"
+#define HITS_VERSION    "hits 1.1"
 #define HITS_CONTACT    "https://github.com/jyvet/hits"
 
 #define checkHip(ret) { assertHip((ret), __FILE__, __LINE__); }
@@ -52,25 +52,26 @@ const char * const ttype_str[] =
 
 typedef struct Transfer
 {
-    hipEvent_t      start;     /* Start event for timing purpose                */
-    hipEvent_t      stop;      /* Stop event for timing purpose                 */
-    int             device;    /* First (or single) device involved in transfer */
-    int             device2;   /* Second device involved in the transfer        */
-    float          *dest;      /* Source buffer (host or GPU memory)            */
-    float          *src;       /* Destination buffer (host or GPU memory)       */
-    hipStream_t     stream;    /* HIP stream dedicated to the transfer          */
-    TransferType_t  type;      /* Type and direction of the transfer            */
-    int             numa_node; /* NUMA node locality                            */
+    hipEvent_t      start;      /* Start event for timing purpose                */
+    hipEvent_t      stop;       /* Stop event for timing purpose                 */
+    int             device;     /* First (or single) device involved in transfer */
+    int             device2;    /* Second device involved in the transfer        */
+    float          *dest;       /* Source buffer (host or GPU memory)            */
+    float          *src;        /* Destination buffer (host or GPU memory)       */
+    hipStream_t     stream;     /* HIP stream dedicated to the transfer          */
+    TransferType_t  type;       /* Type and direction of the transfer            */
+    int             numa_node;  /* NUMA node locality                            */
+    bool            is_started; /* True if at least one stream event submitted   */
     struct hipDeviceProp_t prop_device;
     struct hipDeviceProp_t prop_device2;
 } Transfer_t;
 
 typedef struct Hits
 {
-    Transfer_t *transfer;      /* Array containing all transfers to launch */
-    int         n_transfers;   /* Amount of transfers                      */
-    long        n_iter;        /* Amount of iterations for each transfer   */
-    long        n_size;        /* Transfer size in bytes                   */
+    Transfer_t *transfer;      /* Array containing all transfers to launch     */
+    int         n_transfers;   /* Amount of transfers                          */
+    long        n_iter;        /* Amount of iterations for each transfer       */
+    long        n_size;        /* Transfer size in bytes                       */
     bool        is_numa_aware; /* Allocate the buffers on the proper NUMA node */
 } Hits_t;
 
@@ -219,7 +220,8 @@ static struct argp argp = { options, parse_opt, args_doc, doc };
 
 static void _transfer_init_common(Transfer_t *t)
 {
-    t->numa_node = -1;
+    t->numa_node  = -1;
+    t->is_started = false;
 
     checkHip( hipGetDeviceProperties(&t->prop_device, t->device) );
     if (t->device2 >= 0)
@@ -373,8 +375,8 @@ void fini(Hits_t *hits)
             case HTOD:
                 checkHip( hipHostFree(t->src) );
                 break;
-	    case DTOD:
-		break;
+            case DTOD:
+                break;
         }
     }
 
@@ -388,26 +390,29 @@ void fini(Hits_t *hits)
  * @param   n_bytes[in]  Transfer size
  * @param   n_iter[in]   Iterations
  */
-void direct_transfer(Transfer_t *t, const size_t n_bytes, const size_t n_iter)
+void direct_transfer(Transfer_t *t, const size_t n_bytes, const bool is_last_iter)
 {
     checkHip( hipSetDevice(t->device) );
 
-    printf("Launching %s transfers with Device %d (0x%.2x)",
-           ttype_str[t->type], t->device, t->prop_device.pciBusID);
-    if (t->numa_node >= 0)
-        printf(" - Host buffer allocated on NUMA node %d", t->numa_node);
-
-    printf("\n");
-
-    checkHip( hipEventRecord(t->start, t->stream) );
-
-    for (size_t i = 0; i < n_iter; i++)
+    if (!t->is_started)
     {
-        checkHip( hipMemcpyAsync(t->dest, t->src, n_bytes, (t->type == DTOH) ?
-                                   hipMemcpyDeviceToHost : hipMemcpyHostToDevice, t->stream) );
+        printf("Launching %s transfers with Device %d (0x%.2x)",
+               ttype_str[t->type], t->device, t->prop_device.pciBusID);
+
+        if (t->numa_node >= 0)
+            printf(" - Host buffer allocated on NUMA node %d", t->numa_node);
+
+        printf("\n");
+
+        checkHip( hipEventRecord(t->start, t->stream) );
+        t->is_started = true;
     }
 
-    checkHip( hipEventRecord(t->stop, t->stream) );
+    checkHip( hipMemcpyAsync(t->dest, t->src, n_bytes, (t->type == DTOH) ?
+                               hipMemcpyDeviceToHost : hipMemcpyHostToDevice, t->stream) );
+
+    if (is_last_iter)
+        checkHip( hipEventRecord(t->stop, t->stream) );
 }
 
 /**
@@ -417,21 +422,23 @@ void direct_transfer(Transfer_t *t, const size_t n_bytes, const size_t n_iter)
  * @param   n_bytes[in]  Transfer size
  * @param   n_iter[in]   Iterations
  */
-void dtod_transfer(Transfer_t *t, const size_t n_bytes, const size_t n_iter)
+void dtod_transfer(Transfer_t *t, const size_t n_bytes, const bool is_last_iter)
 {
     checkHip( hipSetDevice(t->device) );
 
-    printf("Launching P2P PCIe transfers from Device %d (0x%.2x) to Device %d (0x%.2x)\n",
-           t->device2, t->prop_device2.pciBusID, t->device, t->prop_device.pciBusID);
-
-    checkHip( hipEventRecord(t->start, t->stream) );
-
-    for (size_t i = 0; i < n_iter; i++)
+    if (!t->is_started)
     {
-        checkHip( hipMemcpyPeerAsync(t->dest, t->device, t->src, t->device2, n_bytes, t->stream) );
+        printf("Launching P2P PCIe transfers from Device %d (0x%.2x) to Device %d (0x%.2x)\n",
+               t->device2, t->prop_device2.pciBusID, t->device, t->prop_device.pciBusID);
+
+        checkHip( hipEventRecord(t->start, t->stream) );
+        t->is_started = true;
     }
 
-    checkHip( hipEventRecord(t->stop, t->stream) );
+    checkHip( hipMemcpyPeerAsync(t->dest, t->device, t->src, t->device2, n_bytes, t->stream) );
+
+    if (is_last_iter)
+        checkHip( hipEventRecord(t->stop, t->stream) );
 }
 
 /**
@@ -446,8 +453,8 @@ void* heart_beat(void *arg)
 
     while (*is_transfering)
     {
-        printf(".");
         sleep(1);
+        printf(".");
     }
 
     return NULL;
@@ -465,15 +472,19 @@ int main(int argc, char *argv[])
     bool is_transfering = true;
     pthread_t thread;
 
-    /* Start all transfers at the same time */
-    for (int i = 0; i < n_transfers; i++)
-    {
-        Transfer_t *t = &hits.transfer[i];
-        (t->type == DTOD) ? dtod_transfer(t, n_bytes, n_iter) : direct_transfer(t, n_bytes, n_iter);
-    }
-
     /* Starting heartbeat thread */
     pthread_create(&thread, NULL, &heart_beat, &is_transfering);
+
+    /* Start all transfers at the same time */
+    for (size_t i = 0; i < n_iter; i++)
+    {
+        const bool is_last = (i == n_iter - 1);
+        for (int j = 0; j < n_transfers; j++)
+        {
+            Transfer_t *t = &hits.transfer[j];
+            (t->type == DTOD) ? dtod_transfer(t, n_bytes, is_last) : direct_transfer(t, n_bytes, is_last);
+        }
+    }
 
     /* Synchronize the GPU from each transfer */
     for (int i = 0; i < n_transfers; i++)

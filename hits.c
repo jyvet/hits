@@ -265,7 +265,7 @@ void dtoh_transfer_init(Transfer_t *t, const size_t n_bytes, const bool is_numa_
         set_numa_affinity(t);
 
     checkHip( hipMalloc(((void **)&t->src), n_bytes) );
-    checkHip( hipHostMalloc(((void **)&t->dest), n_bytes, hipHostMallocDefault) );
+    checkHip( hipHostMalloc(((void **)&t->dest), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
 }
 
 void htod_transfer_init(Transfer_t *t, const size_t n_bytes, const bool is_numa_aware)
@@ -276,7 +276,7 @@ void htod_transfer_init(Transfer_t *t, const size_t n_bytes, const bool is_numa_
         set_numa_affinity(t);
 
     checkHip( hipMalloc(((void **)&t->dest), n_bytes) );
-    checkHip( hipHostMalloc(((void **)&t->src), n_bytes, hipHostMallocDefault) );
+    checkHip( hipHostMalloc(((void **)&t->src), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
 }
 
 void dtod_transfer_init(Transfer_t *t, const size_t n_bytes)

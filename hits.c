@@ -15,6 +15,7 @@
 #include <hip/hip_runtime.h>
 #include <pthread.h>
 #include <numa.h>
+#include <assert.h>
 
 /* Expand macro values to string */
 #define STR_VALUE(var)  #var
@@ -66,13 +67,19 @@ typedef struct Transfer
     struct hipDeviceProp_t prop_device2;
 } Transfer_t;
 
+enum Flags
+{
+    is_numa_aware = 1 << 0,
+    is_pinned     = 1 << 1,
+};
+
 typedef struct Hits
 {
     Transfer_t *transfer;      /* Array containing all transfers to launch     */
     int         n_transfers;   /* Amount of transfers                          */
     long        n_iter;        /* Amount of iterations for each transfer       */
     long        n_size;        /* Transfer size in bytes                       */
-    bool        is_numa_aware; /* Allocate the buffers on the proper NUMA node */
+    int         alloc_flags;   /* Allocation flags (NUMA aware and pinned)     */
 } Hits_t;
 
 const char *argp_program_version = HITS_VERSION;
@@ -91,16 +98,17 @@ static char args_doc[] = "--dtoh=<gpu_id> --htod=<gpu_id> --dtod=<dest_gpu_id,sr
 /* Options */
 static struct argp_option options[] =
 {
-    {"dtoh",             'd', "<id>",    0,  "Provide GPU id for Device to Host transfer."},
-    {"htod",             'h', "<id>",    0,  "Provide GPU id for Host to Device transfer."},
-    {"dtod",             'p', "<id,id>", 0,  "Provide comma-separated GPU ids to specify which "
-                                             "pair of GPUs to use for peer to peer transfer. "
-                                             "First id is the destination, second id is the source."},
-    {"iter",             'i', "<nb>",    0,  "Specify the amount of iterations. [default: "
-                                              STR(N_ITER_DEFAULT) "]"},
-    {"no-numa-affinity", 'n', 0,         0,  "Do not make the transfer buffers NUMA aware."},
-    {"size",             's', "<bytes>", 0,  "Specify the transfer size in bytes. [default: "
-                                              STR(N_SIZE_DEFAULT) "]"},
+    {"dtoh",                  'd', "<id>",    0,  "Provide GPU id for Device to Host transfer."},
+    {"htod",                  'h', "<id>",    0,  "Provide GPU id for Host to Device transfer."},
+    {"dtod",                  'p', "<id,id>", 0,  "Provide comma-separated GPU ids to specify which "
+                                                  "pair of GPUs to use for peer to peer transfer. "
+                                                  "First id is the destination, second id is the source."},
+    {"iter",                  'i', "<nb>",    0,  "Specify the amount of iterations. [default: "
+                                                  STR(N_ITER_DEFAULT) "]"},
+    {"disable-numa-affinity", 'n', 0,         0,  "Do not make the transfer buffers NUMA aware."},
+    {"disable-pinned-memory", 'm', 0,         0,  "Use pageable allocations instead."},
+    {"size",                  's', "<bytes>", 0,  "Specify the transfer size in bytes. [default: "
+                                                  STR(N_SIZE_DEFAULT) "]"},
     {0}
 };
 
@@ -151,7 +159,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
             break;
         case 'n':
-            hits->is_numa_aware = false;
+            hits->alloc_flags = hits->alloc_flags & ~is_numa_aware;
+            break;
+        case 'm':
+            hits->alloc_flags = hits->alloc_flags & ~is_pinned;
             break;
         case 'p':
             transfer->type = DTOD;
@@ -257,26 +268,42 @@ void set_numa_affinity(Transfer_t *t)
         numa_set_preferred(t->numa_node);
 }
 
-void dtoh_transfer_init(Transfer_t *t, const size_t n_bytes, const bool is_numa_aware)
+void dtoh_transfer_init(Transfer_t *t, const size_t n_bytes, const int alloc_flags)
 {
     _transfer_init_common(t);
 
-    if (is_numa_aware)
+    if (alloc_flags & is_numa_aware)
         set_numa_affinity(t);
+
+    if (alloc_flags & is_pinned)
+    {
+        checkHip( hipHostMalloc(((void **)&t->dest), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
+    }
+    else
+        t->dest = (float *)malloc(n_bytes);
+
+    assert(t->dest != NULL);
 
     checkHip( hipMalloc(((void **)&t->src), n_bytes) );
-    checkHip( hipHostMalloc(((void **)&t->dest), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
 }
 
-void htod_transfer_init(Transfer_t *t, const size_t n_bytes, const bool is_numa_aware)
+void htod_transfer_init(Transfer_t *t, const size_t n_bytes, const int alloc_flags)
 {
     _transfer_init_common(t);
 
-    if (is_numa_aware)
+    if (alloc_flags & is_numa_aware)
         set_numa_affinity(t);
 
+    if (alloc_flags & is_pinned)
+    {
+        checkHip( hipHostMalloc(((void **)&t->src), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
+    }
+    else
+        t->src = (float *)malloc(n_bytes);
+
+    assert(t->src != NULL);
+
     checkHip( hipMalloc(((void **)&t->dest), n_bytes) );
-    checkHip( hipHostMalloc(((void **)&t->src), n_bytes, hipHostMallocDefault | hipHostMallocNumaUser) );
 }
 
 void dtod_transfer_init(Transfer_t *t, const size_t n_bytes)
@@ -316,10 +343,10 @@ void transfer_init(Hits_t *hits)
         switch(t->type)
         {
             case DTOH:
-                dtoh_transfer_init(t, hits->n_size, hits->is_numa_aware);
+                dtoh_transfer_init(t, hits->n_size, hits->alloc_flags);
                 break;
             case HTOD:
-                htod_transfer_init(t, hits->n_size, hits->is_numa_aware);
+                htod_transfer_init(t, hits->n_size, hits->alloc_flags);
                 break;
             case DTOD:
                 dtod_transfer_init(t, hits->n_size);
@@ -348,7 +375,7 @@ void init(int argc, char *argv[], Hits_t *hits)
     hits->n_transfers   = 0;
     hits->n_iter        = N_ITER_DEFAULT;
     hits->n_size        = N_SIZE_DEFAULT;
-    hits->is_numa_aware = true;
+    hits->alloc_flags   = is_numa_aware | is_pinned;
 
     argp_parse(&argp, argc, argv, 0, 0, hits);
 
@@ -370,10 +397,20 @@ void fini(Hits_t *hits)
         switch(t->type)
         {
             case DTOH:
-                checkHip( hipHostFree(t->dest) );
+                if (hits->alloc_flags & is_pinned)
+                {
+                    checkHip( hipHostFree(t->dest) );
+                }
+                else
+                    free(t->dest);
                 break;
             case HTOD:
-                checkHip( hipHostFree(t->src) );
+                if (hits->alloc_flags & is_pinned)
+                {
+                    checkHip( hipHostFree(t->src) );
+                }
+                else
+                    free(t->src);
                 break;
             case DTOD:
                 break;

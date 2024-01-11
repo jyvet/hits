@@ -30,7 +30,8 @@ Arguments are :
     -d, --dtoh=<id>            Provide GPU id for Device to Host transfer.
     -h, --htod=<id>            Provide GPU id for Host to Device transfer.
     -i, --iter=<nb>            Specify the amount of iterations. [default: 100]
-    -n, --no-numa-affinity     Do not make the transfer buffers NUMA aware.
+    -m, --disable-pinned-memory   Use pageable allocations instead.
+    -n, --disable-numa-affinity   Do not make the transfer buffers NUMA aware.
     -p, --dtod=<id,id>         Provide comma-separated GPU ids to specify which
                                pair of GPUs to use for peer to peer transfer.
                                First id is the destination, second id is the

@@ -255,7 +255,8 @@ void set_numa_affinity(Transfer_t *t)
 {
     char numa_file[PATH_MAX];
     struct hipDeviceProp_t *prop = &t->prop_device;
-    sprintf(numa_file, "/sys/class/pci_bus/0000:%.2x/device/numa_node", prop->pciBusID);
+    sprintf(numa_file, "/sys/class/pci_bus/%04x:%02x/device/numa_node",
+                       prop->pciDomainID, prop->pciBusID);
 
     FILE* file = fopen(numa_file, "r");
     if (file == NULL)

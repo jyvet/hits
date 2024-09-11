@@ -434,8 +434,8 @@ void direct_transfer(Transfer_t *t, const size_t n_bytes, const bool is_last_ite
 
     if (!t->is_started)
     {
-        printf("Launching %s transfers with Device %d (0x%.2x)",
-               ttype_str[t->type], t->device, t->prop_device.pciBusID);
+        printf("Launching %s transfers with Device %d (%x:%02x)",
+               ttype_str[t->type], t->device, t->prop_device.pciDomainID, t->prop_device.pciBusID);
 
         if (t->numa_node >= 0)
             printf(" - Host buffer allocated on NUMA node %d", t->numa_node);
@@ -466,8 +466,9 @@ void dtod_transfer(Transfer_t *t, const size_t n_bytes, const bool is_last_iter)
 
     if (!t->is_started)
     {
-        printf("Launching P2P PCIe transfers from Device %d (0x%.2x) to Device %d (0x%.2x)\n",
-               t->device2, t->prop_device2.pciBusID, t->device, t->prop_device.pciBusID);
+        printf("Launching P2P PCIe transfers from Device %d (%x:%02x) to Device %d (%x:%02x)\n",
+               t->device2, t->prop_device2.pciDomainID, t->prop_device2.pciBusID,
+	       t->device, t->prop_device.pciDomainID, t->prop_device.pciBusID);
 
         checkHip( hipEventRecord(t->start, t->stream) );
         t->is_started = true;
@@ -545,13 +546,15 @@ int main(int argc, char *argv[])
         dt_sec = dt_msec / 1E3;
 
         if (t->type == DTOD)
-            printf("Transfer %d - P2P transfers from Device %d (0x%.2x) to Device %d (0x%.2x):"
-                   " %.3f GB/s  (%.2f seconds)\n", i, t->device2, t->prop_device2.pciBusID,
-                   t->device, t->prop_device.pciBusID, n_gbytes / dt_sec * n_iter, dt_sec);
+            printf("Transfer %d - P2P transfers from Device %d (%x:%02x) to Device %d (%x:%02x):"
+                   " %.3f GB/s  (%.2f seconds)\n", i, t->device2, t->prop_device2.pciDomainID,
+		   t->prop_device2.pciBusID, t->device, t->prop_device.pciDomainID,
+		   t->prop_device.pciBusID, n_gbytes / dt_sec * n_iter, dt_sec);
         else
-            printf("Transfer %d - Direct transfers (%s) with Device %d (0x%.2x): "
-                   "%.3f GB/s  (%.2f seconds)\n", i, ttype_str[t->type],
-                   t->device, t->prop_device.pciBusID, n_gbytes / dt_sec * n_iter, dt_sec);
+            printf("Transfer %d - Direct transfers (%s) with Device %d (%x:%02x): "
+                   "%.3f GB/s  (%.2f seconds)\n", i, ttype_str[t->type], t->device,
+		   t->prop_device.pciDomainID, t->prop_device.pciBusID,
+		   n_gbytes / dt_sec * n_iter, dt_sec);
     }
 
     fini(&hits);
